@@ -2,8 +2,14 @@ import { Request, Response } from "express";
 import { BookingModel } from "../models/Booking";
 import { UserModel } from "../models/User";
 import { ServiceModel } from "../models/Service";
-import { BookingStatus, PaymentStatus } from "../models/enums";
+import { ZoomSessionModel } from "../models/ZoomSession";
+import {
+  BookingStatus,
+  PaymentStatus,
+  ZoomSessionStatus,
+} from "../models/enums";
 import mongoose from "mongoose";
+import zoomService from "../utils/zoomService";
 
 // Create Booking
 export const createBooking = async (
@@ -172,17 +178,101 @@ export const createBooking = async (
 
     await booking.save();
 
+    // Automatically create Zoom meeting for the booking
+    let zoomSession = null;
+    try {
+      // Calculate meeting duration from timeslot
+      const startTime = new Date(timeslot.start);
+      const endTime = new Date(timeslot.end);
+      const durationMinutes = Math.round(
+        (endTime.getTime() - startTime.getTime()) / (1000 * 60)
+      );
+
+      // Validate duration (Zoom requires at least 1 minute)
+      if (durationMinutes < 1) {
+        throw new Error("Meeting duration must be at least 1 minute");
+      }
+
+      // Create meeting topic with service name and user names
+      const meetingTopic = `${service.name} - ${user.name} & ${subAdmin.name}`;
+      const meetingAgenda = `Consultation session for ${service.name} service`;
+      console.log("meetingTopic", meetingTopic);
+      console.log("meetingAgenda", meetingAgenda);
+
+      // Create Zoom meeting
+      const zoomMeeting = await zoomService.createMeeting(
+        meetingTopic,
+        startTime,
+        durationMinutes,
+        "UTC", // You can make this configurable
+        {
+          agenda: meetingAgenda,
+          hostVideo: true,
+          participantVideo: true,
+          joinBeforeHost: false,
+          muteUponEntry: false,
+          waitingRoom: false,
+          autoRecording: "cloud", // Enable cloud recording to capture recordings and chat
+        }
+      );
+      console.log("ZOOM CALL TESTING", zoomMeeting);
+
+      // Create ZoomSession record
+      zoomSession = new ZoomSessionModel({
+        bookingId: booking._id,
+        meetingId: zoomMeeting.id.toString(),
+        joinUrl: zoomMeeting.join_url,
+        startTime: startTime,
+        endTime: endTime,
+        status: ZoomSessionStatus.SCHEDULED,
+      });
+
+      await zoomSession.save();
+
+      // Update booking with zoom link if payment is already successful
+      // Otherwise, the link will be added when payment succeeds
+      const finalPaymentStatus = paymentStatus || PaymentStatus.PENDING;
+      if (finalPaymentStatus === PaymentStatus.SUCCESS) {
+        booking.zoomLink = zoomMeeting.join_url;
+        await booking.save();
+      }
+
+      console.log(
+        `✅ Zoom meeting created successfully for booking ${booking._id}: ${zoomMeeting.id}`
+      );
+    } catch (zoomError: any) {
+      // Log error but don't fail the booking creation
+      console.error(
+        `⚠️  Failed to create Zoom meeting for booking ${booking._id}:`,
+        zoomError.message
+      );
+      // Continue with booking creation even if Zoom fails
+      // The booking will be created without a Zoom link
+    }
+
     // Populate references for response
     const populatedBooking = await BookingModel.findById(booking._id)
       .populate("userId")
       .populate("subAdminId")
       .populate("serviceId");
 
-    res.status(201).json({
+    // Include zoom session info in response if created
+    const responseData: any = {
       success: true,
       message: "Booking created successfully",
       booking: populatedBooking,
-    });
+    };
+
+    if (zoomSession) {
+      responseData.zoomSession = {
+        meetingId: zoomSession.meetingId,
+        joinUrl: zoomSession.joinUrl,
+        startTime: zoomSession.startTime,
+        status: zoomSession.status,
+      };
+    }
+
+    res.status(201).json(responseData);
   } catch (error: any) {
     console.error("Create booking error:", error);
     res.status(500).json({
@@ -492,6 +582,9 @@ export const updateBooking = async (
       booking.amount = amount;
     }
 
+    // Store original payment status to detect changes
+    const originalPaymentStatus = booking.paymentStatus;
+
     // Validate and update paymentStatus if provided
     if (paymentStatus) {
       if (!Object.values(PaymentStatus).includes(paymentStatus)) {
@@ -548,6 +641,115 @@ export const updateBooking = async (
 
     await booking.save();
 
+    // Handle Zoom meeting updates
+    try {
+      // Find existing Zoom session for this booking
+      const existingZoomSession = await ZoomSessionModel.findOne({
+        bookingId: booking._id,
+      });
+
+      if (existingZoomSession) {
+        // If payment status changed to SUCCESS, update booking with zoom link
+        if (
+          paymentStatus === PaymentStatus.SUCCESS &&
+          originalPaymentStatus !== PaymentStatus.SUCCESS
+        ) {
+          booking.zoomLink = existingZoomSession.joinUrl;
+          await booking.save();
+        }
+
+        // If timeslot changed, update Zoom meeting
+        if (timeslot && (timeslot.start || timeslot.end)) {
+          const startTime = new Date(timeslot.start);
+          const endTime = new Date(timeslot.end);
+          const durationMinutes = Math.round(
+            (endTime.getTime() - startTime.getTime()) / (1000 * 60)
+          );
+
+          if (durationMinutes >= 1) {
+            await zoomService.updateMeeting(existingZoomSession.meetingId, {
+              start_time: startTime.toISOString(),
+              duration: durationMinutes,
+            });
+
+            // Update ZoomSession record
+            existingZoomSession.startTime = startTime;
+            existingZoomSession.endTime = endTime;
+            await existingZoomSession.save();
+
+            console.log(
+              `✅ Zoom meeting ${existingZoomSession.meetingId} updated for booking ${booking._id}`
+            );
+          }
+        }
+      } else if (paymentStatus === PaymentStatus.SUCCESS) {
+        // If no Zoom session exists but payment is successful, create one
+        // This handles the case where booking was created before Zoom integration
+        const startTime = new Date(booking.timeslot.start);
+        const endTime = new Date(booking.timeslot.end);
+        const durationMinutes = Math.round(
+          (endTime.getTime() - startTime.getTime()) / (1000 * 60)
+        );
+
+        if (durationMinutes >= 1) {
+          const populatedBookingForTopic = await BookingModel.findById(
+            booking._id
+          )
+            .populate("userId")
+            .populate("subAdminId")
+            .populate("serviceId");
+
+          const user = populatedBookingForTopic?.userId as any;
+          const subAdmin = populatedBookingForTopic?.subAdminId as any;
+          const service = populatedBookingForTopic?.serviceId as any;
+
+          if (user && subAdmin && service) {
+            const meetingTopic = `${service.name} - ${user.name} & ${subAdmin.name}`;
+            const meetingAgenda = `Consultation session for ${service.name} service`;
+
+            const zoomMeeting = await zoomService.createMeeting(
+              meetingTopic,
+              startTime,
+              durationMinutes,
+              "UTC",
+              {
+                agenda: meetingAgenda,
+                hostVideo: true,
+                participantVideo: true,
+                joinBeforeHost: false,
+                muteUponEntry: false,
+                waitingRoom: false,
+                autoRecording: "none",
+              }
+            );
+
+            const newZoomSession = new ZoomSessionModel({
+              bookingId: booking._id,
+              meetingId: zoomMeeting.id.toString(),
+              joinUrl: zoomMeeting.join_url,
+              startTime: startTime,
+              endTime: endTime,
+              status: ZoomSessionStatus.SCHEDULED,
+            });
+
+            await newZoomSession.save();
+
+            booking.zoomLink = zoomMeeting.join_url;
+            await booking.save();
+            console.log(
+              `✅ Zoom meeting created for existing booking ${booking._id}: ${zoomMeeting.id}`
+            );
+          }
+        }
+      }
+    } catch (zoomError: any) {
+      // Log error but don't fail the booking update
+      console.error(
+        `⚠️  Failed to update Zoom meeting for booking ${booking._id}:`,
+        zoomError.message
+      );
+    }
+
     // Populate references for response
     const populatedBooking = await BookingModel.findById(id)
       .populate("userId")
@@ -584,6 +786,26 @@ export const deleteBooking = async (
         message: "Invalid booking ID format",
       });
       return;
+    }
+
+    // Find and delete associated Zoom session before deleting booking
+    const zoomSession = await ZoomSessionModel.findOne({ bookingId: id });
+    if (zoomSession) {
+      try {
+        await zoomService.deleteMeeting(zoomSession.meetingId);
+        await ZoomSessionModel.findByIdAndDelete(zoomSession._id);
+        console.log(
+          `✅ Zoom meeting ${zoomSession.meetingId} deleted for booking ${id}`
+        );
+      } catch (zoomError: any) {
+        // Log error but continue with booking deletion
+        console.error(
+          `⚠️  Failed to delete Zoom meeting for booking ${id}:`,
+          zoomError.message
+        );
+        // Still delete the ZoomSession record even if API call fails
+        await ZoomSessionModel.findByIdAndDelete(zoomSession._id);
+      }
     }
 
     const booking = await BookingModel.findByIdAndDelete(id);
