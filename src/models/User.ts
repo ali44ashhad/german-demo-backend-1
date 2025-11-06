@@ -9,6 +9,27 @@ export interface IUser extends Document {
   contactNumber?: string;
   profileImage?: string;
   serviceId?: mongoose.Types.ObjectId; // only for sub-admins
+  // Personal Details
+  dateOfBirth?: Date;
+  country?: string;
+  city?: string;
+  // Academic Details
+  highestQualification?: string;
+  fieldOfStudy?: string;
+  graduationYear?: number;
+  marksOrCGPA?: string;
+  targetDegreeInGermany?: string;
+  desiredCourseProgram?: string;
+  preferredIntake?: string; // Winter / Summer
+  englishProficiency?: string; // IELTS / TOEFL / PTE
+  germanLanguageLevel?: string; // None / A1 / A2 / B1 / B2 / C1
+  workExperience?: string;
+  // Financial & Planning
+  estimatedBudget?: string;
+  shortlistedUniversities?: string;
+  needHelpWith?: string[]; // Array for SOP, LOR, Application Process checkboxes
+  // Consent
+  agreedToTerms?: boolean;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -25,13 +46,6 @@ const UserSchema = new Schema<IUser>(
     },
     contactNumber: { type: String },
     profileImage: { type: String },
-    // serviceId: {
-    //   type: Schema.Types.ObjectId,
-    //   ref: "Service",
-    //   required: function (this: IUser) {
-    //     return this.role === UserRole.SUBADMIN;
-    //   },
-    // },
     serviceId: {
       type: Schema.Types.ObjectId,
       ref: "Service",
@@ -48,6 +62,27 @@ const UserSchema = new Schema<IUser>(
         message: "Invalid serviceId provided.",
       },
     },
+    // Personal Details
+    dateOfBirth: { type: Date },
+    country: { type: String, trim: true },
+    city: { type: String, trim: true },
+    // Academic Details
+    highestQualification: { type: String, trim: true },
+    fieldOfStudy: { type: String, trim: true },
+    graduationYear: { type: Number },
+    marksOrCGPA: { type: String, trim: true },
+    targetDegreeInGermany: { type: String, trim: true },
+    desiredCourseProgram: { type: String, trim: true },
+    preferredIntake: { type: String, trim: true }, // Winter / Summer
+    englishProficiency: { type: String, trim: true }, // IELTS / TOEFL / PTE
+    germanLanguageLevel: { type: String, trim: true }, // None / A1 / A2 / B1 / B2 / C1
+    workExperience: { type: String, trim: true },
+    // Financial & Planning
+    estimatedBudget: { type: String, trim: true },
+    shortlistedUniversities: { type: String, trim: true },
+    needHelpWith: [{ type: String, trim: true }], // Array for SOP, LOR, Application Process
+    // Consent
+    agreedToTerms: { type: Boolean, default: false },
   },
   { timestamps: true }
 );
