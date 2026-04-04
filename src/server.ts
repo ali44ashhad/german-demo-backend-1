@@ -42,5 +42,9 @@ app.use("/api/bookings", bookingRoutes);
 app.use("/api/dashboard", dashboardRoutes);
 app.use("/api", noteRoutes);
 
-const PORT = process.env.PORT || 5005;
-app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+if (process.env.NODE_ENV !== 'production') {
+  const PORT = process.env.PORT || 5005;
+  app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+}
+
+export default app;
