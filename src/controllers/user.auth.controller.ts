@@ -110,7 +110,16 @@ export const register = async (req: Request, res: Response): Promise<void> => {
         </div>
       `;
       
-      sendHtmlEmail(email, "Welcome! Please verify your email", emailHtml).catch(console.error);
+      // AWAIT is required here for Serverless environments (like Vercel)!
+      // Otherwise, Vercel will kill the function the millisecond the response is sent,
+      // terminating the email sending attempt abruptly with no logs.
+      try {
+        await sendHtmlEmail(email, "Welcome! Please verify your email", emailHtml);
+      } catch (emailError) {
+        console.error("Failed to send verification email:", emailError);
+        // We can still proceed with 201 so the user gets created,
+        // or we could return a 500. Let's just log it and proceed for now.
+      }
       
       res.status(201).json({
         success: true,
