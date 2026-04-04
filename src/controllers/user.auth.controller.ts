@@ -656,3 +656,67 @@ export const verifyEmail = async (req: Request, res: Response): Promise<void> =>
     res.status(500).json({ success: false, message: "Server error", error: error.message });
   }
 };
+
+// Resend Verification Email
+export const resendVerificationEmail = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { email } = req.body;
+
+    if (!email) {
+      res.status(400).json({ success: false, message: "Email is required" });
+      return;
+    }
+
+    const user = await UserModel.findOne({ email });
+    if (!user) {
+      res.status(404).json({ success: false, message: "User not found" });
+      return;
+    }
+
+    if (user.isVerified) {
+      res.status(400).json({ success: false, message: "Email is already verified. You can log in." });
+      return;
+    }
+
+    const crypto = require("crypto");
+    const verificationToken = crypto.randomBytes(32).toString("hex");
+    const verificationTokenExpiresAt = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
+
+    user.verificationToken = verificationToken;
+    user.verificationTokenExpiresAt = verificationTokenExpiresAt;
+    await user.save();
+
+    const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:5173";
+    const { sendHtmlEmail } = require("../utils/emailService");
+    
+    const verificationLink = `${FRONTEND_URL}/verify?token=${verificationToken}`;
+    const emailHtml = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; border: 1px solid #ddd; border-radius: 8px; overflow: hidden;">
+        <div style="background-color: #4CAF50; color: white; padding: 20px; text-align: center;">
+          <h1 style="margin: 0; font-size: 24px;">New Verification Link</h1>
+        </div>
+        <div style="padding: 30px;">
+          <p style="font-size: 16px; color: #333;">Hi ${user.name},</p>
+          <p style="font-size: 16px; color: #333;">We received a request to resend your email verification link. Please click below to verify your account.</p>
+          <div style="text-align: center; margin: 30px 0;">
+            <a href="${verificationLink}" style="background-color: #4CAF50; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; font-weight: bold; font-size: 16px; display: inline-block;">Verify Email Address</a>
+          </div>
+          <p style="font-size: 14px; color: #666;">If the button doesn't work, copy and paste this link:</p>
+          <p style="font-size: 14px; word-break: break-all; color: #0066cc;">${verificationLink}</p>
+        </div>
+      </div>
+    `;
+
+    try {
+      await sendHtmlEmail(email, "Your New Verification Link", emailHtml);
+      res.status(200).json({ success: true, message: "A new verification link has been sent to your email." });
+    } catch (emailError) {
+      console.error("Failed to resend verification email:", emailError);
+      res.status(500).json({ success: false, message: "Failed to send email. Please try again later." });
+    }
+  } catch (error: any) {
+    console.error("Resend verify email error:", error);
+    res.status(500).json({ success: false, message: "Server error", error: error.message });
+  }
+};
+
