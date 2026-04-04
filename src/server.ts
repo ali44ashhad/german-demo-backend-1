@@ -42,6 +42,11 @@ app.use("/api/bookings", bookingRoutes);
 app.use("/api/dashboard", dashboardRoutes);
 app.use("/api", noteRoutes);
 
+// Health check endpoint
+app.get("/api/health", (req, res) => {
+  res.status(200).json({ status: "OK", timestamp: new Date().toISOString() });
+});
+
 if (process.env.NODE_ENV !== 'production') {
   const PORT = process.env.PORT || 5005;
   app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
