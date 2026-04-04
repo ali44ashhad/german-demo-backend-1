@@ -30,6 +30,10 @@ export interface IUser extends Document {
   needHelpWith?: string[]; // Array for SOP, LOR, Application Process checkboxes
   // Consent
   agreedToTerms?: boolean;
+  // Verification
+  isVerified?: boolean;
+  verificationToken?: string;
+  verificationTokenExpiresAt?: Date;
   // Resume PDF
   resumePdf?: string; // URL or path to the generated PDF resume
   createdAt: Date;
@@ -85,6 +89,10 @@ const UserSchema = new Schema<IUser>(
     needHelpWith: [{ type: String, trim: true }], // Array for SOP, LOR, Application Process
     // Consent
     agreedToTerms: { type: Boolean, default: false },
+    // Verification
+    isVerified: { type: Boolean, default: false },
+    verificationToken: { type: String },
+    verificationTokenExpiresAt: { type: Date },
     // Resume PDF
     resumePdf: { type: String },
   },

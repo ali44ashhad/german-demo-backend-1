@@ -2,6 +2,7 @@ import { Router } from "express";
 import {
   register,
   login,
+  verifyEmail,
   logout,
   getCurrentUser,
   updateCurrentUserProfile,
@@ -25,6 +26,7 @@ const router = Router();
 // Public routes
 router.post("/auth/register", register);
 router.post("/auth/login", login);
+router.post("/auth/verify-email", verifyEmail);
 
 // Protected routes
 router.post("/auth/logout", authenticate, logout);

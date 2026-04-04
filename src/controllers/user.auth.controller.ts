@@ -64,6 +64,16 @@ export const register = async (req: Request, res: Response): Promise<void> => {
     const salt = await bcrypt.genSalt(10);
     const hashedPassword = await bcrypt.hash(password, salt);
 
+    let verificationToken = undefined;
+    let verificationTokenExpiresAt = undefined;
+    
+    // For normal users, setup verification requirements
+    if (role === UserRole.USER) {
+      const crypto = require("crypto");
+      verificationToken = crypto.randomBytes(32).toString("hex");
+      verificationTokenExpiresAt = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
+    }
+
     // Create user
     const user = await UserModel.create({
       name,
@@ -73,9 +83,49 @@ export const register = async (req: Request, res: Response): Promise<void> => {
       contactNumber,
       profileImage,
       ...(role === UserRole.SUBADMIN && { serviceId }),
+      ...(role === UserRole.USER && { verificationToken, verificationTokenExpiresAt }),
+      isVerified: role === UserRole.USER ? false : true,
     });
+    
+    if (role === UserRole.USER) {
+      const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:5173";
+      const { sendHtmlEmail } = require("../utils/emailService");
+      
+      const verificationLink = `${FRONTEND_URL}/verify?token=${verificationToken}`;
+      const emailHtml = `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; border: 1px solid #ddd; border-radius: 8px; overflow: hidden;">
+          <div style="background-color: #4CAF50; color: white; padding: 20px; text-align: center;">
+            <h1 style="margin: 0; font-size: 24px;">Welcome!</h1>
+          </div>
+          <div style="padding: 30px;">
+            <p style="font-size: 16px; color: #333;">Hi ${name},</p>
+            <p style="font-size: 16px; color: #333;">Thank you for registering. Please verify your email address to complete your profile and log in.</p>
+            <div style="text-align: center; margin: 30px 0;">
+              <a href="${verificationLink}" style="background-color: #4CAF50; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; font-weight: bold; font-size: 16px; display: inline-block;">Verify Email Address</a>
+            </div>
+            <p style="font-size: 14px; color: #666;">If the button doesn't work, you can copy and paste the following link into your browser:</p>
+            <p style="font-size: 14px; word-break: break-all; color: #0066cc;">${verificationLink}</p>
+            <p style="font-size: 14px; margin-top: 30px; color: #999;">If you didn't create an account, you can safely ignore this email.</p>
+          </div>
+        </div>
+      `;
+      
+      sendHtmlEmail(email, "Welcome! Please verify your email", emailHtml).catch(console.error);
+      
+      res.status(201).json({
+        success: true,
+        message: "User registered successfully. Please check your email to verify your account.",
+        user: {
+          id: user._id,
+          name: user.name,
+          email: user.email,
+          role: user.role,
+        },
+      });
+      return;
+    }
 
-    // Generate token
+    // Generate token for verified accounts (subadmin, superadmin)
     const token = jwt.sign({ userId: user._id, role: user.role }, JWT_SECRET, {
       expiresIn: JWT_EXPIRES_IN,
     });
@@ -133,6 +183,12 @@ export const login = async (req: Request, res: Response): Promise<void> => {
     const isPasswordValid = await bcrypt.compare(password, user.password);
     if (!isPasswordValid) {
       res.status(401).json({ success: false, message: "Invalid credentials" });
+      return;
+    }
+
+    // Check verification status
+    if (user.role === UserRole.USER && !user.isVerified) {
+      res.status(403).json({ success: false, message: "Please verify your email first" });
       return;
     }
 
@@ -555,5 +611,39 @@ export const serveCurrentUserResume = async (
     res
       .status(500)
       .json({ success: false, message: "Server error", error: error.message });
+  }
+};
+
+// Verify Email
+export const verifyEmail = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { token } = req.body;
+
+    if (!token) {
+      res.status(400).json({ success: false, message: "Verification token is required" });
+      return;
+    }
+
+    const user = await UserModel.findOne({
+      verificationToken: token,
+      verificationTokenExpiresAt: { $gt: Date.now() },
+    });
+
+    if (!user) {
+      res.status(400).json({ success: false, message: "Invalid or expired verification token" });
+      return;
+    }
+
+    user.isVerified = true;
+    (user as any).verificationToken = undefined;
+    (user as any).verificationTokenExpiresAt = undefined;
+    
+
+    await user.save();
+
+    res.status(200).json({ success: true, message: "Email verified successfully. You can now log in." });
+  } catch (error: any) {
+    console.error("Verify email error:", error);
+    res.status(500).json({ success: false, message: "Server error", error: error.message });
   }
 };
