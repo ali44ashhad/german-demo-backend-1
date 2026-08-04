@@ -10,6 +10,8 @@ import {
   updateCurrentUserProfile,
   getCurrentUserResume,
   serveCurrentUserResume,
+  serveCurrentUserBiodataFile,
+  serveCurrentUserStudentInquiryFile,
   uploadProfileImage,
 } from "../controllers/user.auth.controller";
 import { authenticate, authorize } from "../middlewares/userAuth";
@@ -55,6 +57,8 @@ router.post(
 );
 router.get("/auth/resume", authenticate, getCurrentUserResume);
 router.get("/auth/resume/file", authenticate, serveCurrentUserResume);
+router.get("/auth/biodata/file", authenticate, serveCurrentUserBiodataFile);
+router.get("/auth/student-inquiry/file", authenticate, serveCurrentUserStudentInquiryFile);
 
 router.get("/users", authenticate, authorize(UserRole.SUPERADMIN), getAllUsers);
 

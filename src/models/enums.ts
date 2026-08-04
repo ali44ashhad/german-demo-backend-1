@@ -32,3 +32,13 @@ export enum ZoomSessionStatus {
   ONGOING = "ongoing",
   COMPLETED = "completed",
 }
+
+/** Student inquiry / PDF — stable API values */
+export enum Gender {
+  MALE = "male",
+  FEMALE = "female",
+  TRANSGENDER = "transgender",
+  NON_BINARY = "non_binary",
+  PREFER_NOT_TO_SAY = "prefer_not_to_say",
+  OTHER = "other",
+}

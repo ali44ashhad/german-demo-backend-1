@@ -4,8 +4,17 @@ import jwt from "jsonwebtoken";
 import axios from "axios";
 import { UserModel } from "../models/User";
 import { UserRole } from "../models/enums";
-import { generateResumePDF } from "../utils/pdfGenerator";
-import { uploadBufferToCloudinary } from "../utils/cloudinary";
+import { generateBiodataPDF } from "../utils/biodataPdfGenerator";
+import { generateStudentInquiryPDF } from "../utils/studentInquiryPdfGenerator";
+import { mergeProfileBodyIntoUser } from "../utils/profilePayloadMerge";
+import {
+  uploadBufferToCloudinary,
+  destroyManyBestEffort,
+  destroyPublicIdBestEffort,
+  destroyCloudinaryUrlBestEffort,
+} from "../utils/cloudinary";
+import { getProfilePdfFilenames } from "../utils/profileDocumentNames";
+import type { UploadApiResponse } from "cloudinary";
 
 const JWT_SECRET = process.env.JWT_SECRET || "your-secret-key";
 const JWT_EXPIRES_IN = "7d";
@@ -284,136 +293,59 @@ export const updateCurrentUserProfile = async (
 ): Promise<void> => {
   try {
     const userId = (req as any).userId;
-    const {
-      name,
-      profileImage,
-      dateOfBirth,
-      country,
-      city,
-      highestQualification,
-      fieldOfStudy,
-      graduationYear,
-      marksOrCGPA,
-      targetDegreeInGermany,
-      desiredCourseProgram,
-      preferredIntake,
-      englishProficiency,
-      germanLanguageLevel,
-      workExperience,
-      estimatedBudget,
-      shortlistedUniversities,
-      needHelpWith,
-      agreedToTerms,
-    } = req.body;
 
-    // Find user
     const user = await UserModel.findById(userId);
     if (!user) {
       res.status(404).json({ success: false, message: "User not found" });
       return;
     }
 
-    // Update fields
-    if (name !== undefined) user.name = name.trim();
-    if (profileImage !== undefined) {
-      const trimmed = profileImage.trim();
-      if (trimmed) {
-        user.profileImage = trimmed;
-      } else {
-        delete user.profileImage;
-      }
-    }
-    if (dateOfBirth !== undefined) {
-      if (dateOfBirth) {
-        user.dateOfBirth = new Date(dateOfBirth);
-      } else {
-        delete user.dateOfBirth;
-      }
-    }
-    if (country !== undefined) {
-      const trimmed = country.trim();
-      if (trimmed) {
-        user.country = trimmed;
-      } else {
-        delete user.country;
-      }
-    }
-    if (city !== undefined) user.city = city.trim() || undefined;
-    if (highestQualification !== undefined) {
-      user.highestQualification = highestQualification.trim() || undefined;
-    }
-    if (fieldOfStudy !== undefined) {
-      user.fieldOfStudy = fieldOfStudy.trim() || undefined;
-    }
-    if (graduationYear !== undefined) {
-      if (graduationYear) {
-        user.graduationYear = parseInt(graduationYear, 10);
-      } else {
-        delete user.graduationYear;
-      }
-    }
-    if (marksOrCGPA !== undefined) {
-      user.marksOrCGPA = marksOrCGPA.trim() || undefined;
-    }
-    if (targetDegreeInGermany !== undefined) {
-      user.targetDegreeInGermany = targetDegreeInGermany.trim() || undefined;
-    }
-    if (desiredCourseProgram !== undefined) {
-      user.desiredCourseProgram = desiredCourseProgram.trim() || undefined;
-    }
-    if (preferredIntake !== undefined) {
-      user.preferredIntake = preferredIntake.trim() || undefined;
-    }
-    if (englishProficiency !== undefined) {
-      user.englishProficiency = englishProficiency.trim() || undefined;
-    }
-    if (germanLanguageLevel !== undefined) {
-      user.germanLanguageLevel = germanLanguageLevel.trim() || undefined;
-    }
-    if (workExperience !== undefined) {
-      user.workExperience = workExperience.trim() || undefined;
-    }
-    if (estimatedBudget !== undefined) {
-      user.estimatedBudget = estimatedBudget.trim() || undefined;
-    }
-    if (shortlistedUniversities !== undefined) {
-      user.shortlistedUniversities = shortlistedUniversities.trim() || undefined;
-    }
-    if (needHelpWith !== undefined) {
-      user.needHelpWith = Array.isArray(needHelpWith) ? needHelpWith : [];
-    }
-    if (agreedToTerms !== undefined) {
-      user.agreedToTerms = agreedToTerms;
-    }
+    mergeProfileBodyIntoUser(user, req.body as Record<string, unknown>);
 
     await user.save();
 
-    // Reload user from database to ensure we have the latest data for PDF generation
     const updatedUserForPDF = await UserModel.findById(userId);
     if (!updatedUserForPDF) {
       res.status(404).json({ success: false, message: "User not found after update" });
       return;
     }
 
-    // Generate PDF resume with the latest user data
-    const pdfBuffer = await generateResumePDF(updatedUserForPDF);
-    
-    // Upload PDF to Cloudinary
-    let pdfUrl: string;
+    const oldBiodataUrl = user.biodataPdf || user.resumePdf;
+    const oldInquiryUrl = user.studentInquiryPdf;
+    const pdfNames = getProfilePdfFilenames(updatedUserForPDF);
+
+    let pdfBioBuffer: Buffer;
+    let pdfInqBuffer: Buffer;
     try {
-      const cloudinaryResult = await uploadBufferToCloudinary(pdfBuffer, {
-        folder: "german-demo/resumes",
-        resource_type: "raw", 
-        format:"pdf",
-        use_filename: false, // We're using filename_override, so don't use original filename
-        unique_filename: true,
-        filename_override: `resume_${userId}_${Date.now()}.pdf`,
+      pdfBioBuffer = await generateBiodataPDF(updatedUserForPDF);
+      pdfInqBuffer = await generateStudentInquiryPDF(updatedUserForPDF);
+    } catch (pdfErr: any) {
+      console.error("PDF generation error:", pdfErr);
+      res.status(500).json({
+        success: false,
+        message: "Failed to generate PDF documents",
+        error: pdfErr?.message,
       });
-      pdfUrl = cloudinaryResult.secure_url;
+      return;
+    }
+
+    let biodataPdfUrl: string;
+    let studentInquiryPdfUrl: string;
+    let bioResult: UploadApiResponse | undefined;
+    let inqResult: UploadApiResponse | undefined;
+
+    try {
+      bioResult = await uploadBufferToCloudinary(pdfBioBuffer, {
+        folder: "german-demo/biodata",
+        resource_type: "raw",
+        format: "pdf",
+        use_filename: true,
+        unique_filename: false,
+        filename_override: pdfNames.cloudinaryBiodata,
+      });
+      biodataPdfUrl = bioResult.secure_url;
     } catch (error: any) {
-      console.error("Cloudinary PDF upload error:", error);
-      // If Cloudinary upload fails, we can still return success but log the error
-      // Or you might want to fail the request - let's fail it for now
+      console.error("Cloudinary biodata PDF upload error:", error);
       res.status(500).json({
         success: false,
         message: "Failed to upload PDF to Cloudinary",
@@ -422,9 +354,50 @@ export const updateCurrentUserProfile = async (
       return;
     }
 
-    // Store PDF URL in user model
-    user.resumePdf = pdfUrl;
-    await user.save();
+    try {
+      inqResult = await uploadBufferToCloudinary(pdfInqBuffer, {
+        folder: "german-demo/student-inquiry",
+        resource_type: "raw",
+        format: "pdf",
+        use_filename: true,
+        unique_filename: false,
+        filename_override: pdfNames.cloudinaryInquiry,
+      });
+      studentInquiryPdfUrl = inqResult.secure_url;
+    } catch (error: any) {
+      console.error("Cloudinary student inquiry PDF upload error:", error);
+      await destroyPublicIdBestEffort(bioResult.public_id, "raw");
+      res.status(500).json({
+        success: false,
+        message: "Failed to upload PDF to Cloudinary",
+        error: error.message,
+      });
+      return;
+    }
+
+    user.biodataPdf = biodataPdfUrl;
+    user.studentInquiryPdf = studentInquiryPdfUrl;
+    user.resumePdf = biodataPdfUrl;
+
+    try {
+      await user.save();
+    } catch (saveErr: any) {
+      console.error("Failed to save PDF URLs after upload:", saveErr);
+      await destroyPublicIdBestEffort(bioResult.public_id, "raw");
+      await destroyPublicIdBestEffort(inqResult.public_id, "raw");
+      res.status(500).json({
+        success: false,
+        message: "Failed to save profile PDF references",
+        error: saveErr?.message,
+      });
+      return;
+    }
+
+    await destroyManyBestEffort(
+      [oldBiodataUrl, oldInquiryUrl],
+      "raw",
+      [biodataPdfUrl, studentInquiryPdfUrl]
+    );
 
     const updatedUser = await UserModel.findById(userId)
       .select("-password")
@@ -434,7 +407,11 @@ export const updateCurrentUserProfile = async (
       success: true,
       message: "Profile updated successfully",
       user: updatedUser,
-      resumePdf: pdfUrl,
+      biodataPdf: biodataPdfUrl,
+      studentInquiryPdf: studentInquiryPdfUrl,
+      resumePdf: biodataPdfUrl,
+      biodataPdfFilename: pdfNames.biodata,
+      studentInquiryPdfFilename: pdfNames.inquiry,
     });
   } catch (error: any) {
     console.error("Update current user profile error:", error);
@@ -461,15 +438,15 @@ export const uploadProfileImage = async (
       return;
     }
 
-    // Find user
     const user = await UserModel.findById(userId);
     if (!user) {
       res.status(404).json({ success: false, message: "User not found" });
       return;
     }
 
-    // Upload to Cloudinary
-    let cloudinaryResult;
+    const oldProfileImage = user.profileImage;
+
+    let cloudinaryResult: UploadApiResponse;
     try {
       cloudinaryResult = await uploadBufferToCloudinary(file.buffer, {
         folder: "german-demo/profile-images",
@@ -487,9 +464,25 @@ export const uploadProfileImage = async (
       return;
     }
 
-    // Update user profile image
-    user.profileImage = cloudinaryResult.secure_url;
-    await user.save();
+    const newImageUrl = cloudinaryResult.secure_url;
+    user.profileImage = newImageUrl;
+
+    try {
+      await user.save();
+    } catch (saveErr: any) {
+      console.error("Failed to save profile image URL:", saveErr);
+      await destroyPublicIdBestEffort(cloudinaryResult.public_id, "image");
+      res.status(500).json({
+        success: false,
+        message: "Failed to save profile image",
+        error: saveErr?.message,
+      });
+      return;
+    }
+
+    if (oldProfileImage && oldProfileImage !== newImageUrl) {
+      await destroyCloudinaryUrlBestEffort(oldProfileImage, "image");
+    }
 
     const updatedUser = await UserModel.findById(userId)
       .select("-password")
@@ -499,7 +492,7 @@ export const uploadProfileImage = async (
       success: true,
       message: "Profile image uploaded successfully",
       user: updatedUser,
-      imageUrl: cloudinaryResult.secure_url,
+      imageUrl: newImageUrl,
     });
   } catch (error: any) {
     console.error("Upload profile image error:", error);
@@ -509,7 +502,64 @@ export const uploadProfileImage = async (
   }
 };
 
-// Get Current User Resume PDF (returns URL or data)
+/** Stream a PDF from Cloudinary URL or data: URL */
+async function serveStoredPdfResponse(
+  res: Response,
+  stored: string | undefined,
+  filename: string
+): Promise<void> {
+  if (!stored) {
+    res.status(404).json({
+      success: false,
+      message: "PDF not found. Please update your profile first.",
+    });
+    return;
+  }
+
+  if (stored.startsWith("data:")) {
+    const base64Data = stored.split(",")[1];
+    if (!base64Data) {
+      res.status(400).json({
+        success: false,
+        message: "Invalid PDF format.",
+      });
+      return;
+    }
+    const buffer = Buffer.from(base64Data, "base64");
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `inline; filename="${filename}"`);
+    res.send(buffer);
+    return;
+  }
+
+  if (stored.startsWith("http")) {
+    try {
+      const response = await axios.get(stored, {
+        responseType: "arraybuffer",
+        headers: { "User-Agent": "Mozilla/5.0" },
+      });
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader("Content-Disposition", `inline; filename="${filename}"`);
+      res.setHeader("Cache-Control", "public, max-age=3600");
+      res.send(Buffer.from(response.data));
+    } catch (error: any) {
+      console.error("Error fetching PDF from Cloudinary:", error);
+      res.status(500).json({
+        success: false,
+        message: "Failed to fetch PDF from storage",
+        error: error.message,
+      });
+    }
+    return;
+  }
+
+  res.status(400).json({
+    success: false,
+    message: "Invalid PDF format",
+  });
+}
+
+// Get Current User Resume PDF (returns URL or data) — legacy key points at biodata
 export const getCurrentUserResume = async (
   req: Request,
   res: Response
@@ -523,21 +573,25 @@ export const getCurrentUserResume = async (
       return;
     }
 
-    if (!user.resumePdf) {
+    const biodataRef = user.biodataPdf || user.resumePdf;
+    if (!biodataRef && !user.studentInquiryPdf) {
       res.status(404).json({
         success: false,
-        message: "Resume PDF not found. Please update your profile first.",
+        message: "PDF not found. Please update your profile first.",
       });
       return;
     }
 
-    // Return the Cloudinary URL (or legacy base64 data URL for backward compatibility)
     res.status(200).json({
       success: true,
-      resumePdf: user.resumePdf,
-      resumePdfUrl: user.resumePdf.startsWith("http") 
-        ? user.resumePdf 
-        : undefined, // If it's a Cloudinary URL, return it
+      resumePdf: biodataRef,
+      resumePdfUrl: biodataRef?.startsWith("http") ? biodataRef : undefined,
+      biodataPdf: user.biodataPdf,
+      biodataPdfUrl: user.biodataPdf?.startsWith("http") ? user.biodataPdf : undefined,
+      studentInquiryPdf: user.studentInquiryPdf,
+      studentInquiryPdfUrl: user.studentInquiryPdf?.startsWith("http")
+        ? user.studentInquiryPdf
+        : undefined,
     });
   } catch (error: any) {
     console.error("Get current user resume error:", error);
@@ -547,7 +601,50 @@ export const getCurrentUserResume = async (
   }
 };
 
-// Serve Current User Resume PDF (proxies from Cloudinary)
+// Serve biodata PDF (legacy /resume/file serves biodata || resumePdf)
+export const serveCurrentUserBiodataFile = async (
+  req: Request,
+  res: Response
+): Promise<void> => {
+  try {
+    const userId = (req as any).userId;
+    const user = await UserModel.findById(userId).select("-password");
+    if (!user) {
+      res.status(404).json({ success: false, message: "User not found" });
+      return;
+    }
+    const pdfNames = getProfilePdfFilenames(user);
+    await serveStoredPdfResponse(
+      res,
+      user.biodataPdf || user.resumePdf,
+      pdfNames.biodata
+    );
+  } catch (error: any) {
+    console.error("Serve biodata error:", error);
+    res.status(500).json({ success: false, message: "Server error", error: error.message });
+  }
+};
+
+export const serveCurrentUserStudentInquiryFile = async (
+  req: Request,
+  res: Response
+): Promise<void> => {
+  try {
+    const userId = (req as any).userId;
+    const user = await UserModel.findById(userId).select("-password");
+    if (!user) {
+      res.status(404).json({ success: false, message: "User not found" });
+      return;
+    }
+    const pdfNames = getProfilePdfFilenames(user);
+    await serveStoredPdfResponse(res, user.studentInquiryPdf, pdfNames.inquiry);
+  } catch (error: any) {
+    console.error("Serve student inquiry error:", error);
+    res.status(500).json({ success: false, message: "Server error", error: error.message });
+  }
+};
+
+// Serve Current User Resume PDF (proxies biodata for backward compatibility)
 export const serveCurrentUserResume = async (
   req: Request,
   res: Response
@@ -561,60 +658,12 @@ export const serveCurrentUserResume = async (
       return;
     }
 
-    if (!user.resumePdf) {
-      res.status(404).json({
-        success: false,
-        message: "Resume PDF not found. Please update your profile first.",
-      });
-      return;
-    }
-
-    // If it's a base64 data URL, serve it directly
-    if (user.resumePdf.startsWith("data:")) {
-      const base64Data = user.resumePdf.split(",")[1];
-      if (!base64Data) {
-        res.status(400).json({
-          success: false,
-          message: "Invalid resume PDF format.",
-        });
-        return;
-      }
-      const buffer = Buffer.from(base64Data, "base64");
-      res.setHeader("Content-Type", "application/pdf");
-      res.setHeader("Content-Disposition", `inline; filename="resume.pdf"`);
-      res.send(buffer);
-      return;
-    }
-
-    // If it's a Cloudinary URL, fetch and proxy it
-    if (user.resumePdf.startsWith("http")) {
-      try {
-        const response = await axios.get(user.resumePdf, {
-          responseType: "arraybuffer",
-          headers: {
-            "User-Agent": "Mozilla/5.0",
-          },
-        });
-
-        res.setHeader("Content-Type", "application/pdf");
-        res.setHeader("Content-Disposition", `inline; filename="resume.pdf"`);
-        res.setHeader("Cache-Control", "public, max-age=3600");
-        res.send(Buffer.from(response.data));
-      } catch (error: any) {
-        console.error("Error fetching PDF from Cloudinary:", error);
-        res.status(500).json({
-          success: false,
-          message: "Failed to fetch PDF from Cloudinary",
-          error: error.message,
-        });
-      }
-      return;
-    }
-
-    res.status(400).json({
-      success: false,
-      message: "Invalid PDF format",
-    });
+    const pdfNames = getProfilePdfFilenames(user);
+    await serveStoredPdfResponse(
+      res,
+      user.biodataPdf || user.resumePdf,
+      pdfNames.biodata
+    );
   } catch (error: any) {
     console.error("Serve current user resume error:", error);
     res

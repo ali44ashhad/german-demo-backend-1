@@ -1,15 +1,7 @@
 {
-  "version": 2,
-  "builds": [
-    {
-      "src": "src/server.ts",
-      "use": "@vercel/node"
+  "functions": {
+    "src/server.ts": {
+      "maxDuration": 60
     }
-  ],
-  "rewrites": [
-    {
-      "source": "/(.*)",
-      "destination": "src/server.ts"
-    }
-  ]
+  }
 }

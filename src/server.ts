@@ -13,7 +13,6 @@ import noteRoutes from "./routes/note.routes";
 import cookieParser from "cookie-parser";
 
 dotenv.config();
-connectDB();
 
 // Verify email configuration (non-blocking)
 verifyEmailConfig().catch(() => {
@@ -21,16 +20,37 @@ verifyEmailConfig().catch(() => {
     "⚠️  Email service not configured. Email functionality will be disabled."
   );
 });
+
+const defaultOrigins = ["http://localhost:5173", "http://localhost:5177"];
+const corsOrigin = process.env.CORS_ORIGIN
+  ? process.env.CORS_ORIGIN.split(",").map((o) => o.trim())
+  : defaultOrigins;
+
 const corsOptions = {
-  origin: process.env.CORS_ORIGIN || 'http://localhost:5173',
-  credentials: true, // Allow cookies to be sent
-  optionsSuccessStatus: 200
+  origin: corsOrigin.length === 1 ? corsOrigin[0] : corsOrigin,
+  credentials: true,
+  optionsSuccessStatus: 200,
 };
 
 const app = express();
+
 app.use(cors(corsOptions));
 app.use(express.json());
 app.use(cookieParser());
+
+// Ensure MongoDB is ready before handling requests (serverless-safe)
+app.use(async (_req, res, next) => {
+  try {
+    await connectDB();
+    next();
+  } catch (error) {
+    console.error("Database connection failed:", error);
+    res.status(503).json({
+      success: false,
+      message: "Database unavailable. Please try again shortly.",
+    });
+  }
+});
 
 // Webhook routes (must be before other routes to handle raw body if needed)
 app.use("/api", webhookRoutes);
@@ -47,7 +67,7 @@ app.get("/api/health", (req, res) => {
   res.status(200).json({ status: "OK", timestamp: new Date().toISOString() });
 });
 
-if (process.env.NODE_ENV !== 'production') {
+if (process.env.NODE_ENV !== "production") {
   const PORT = process.env.PORT || 5005;
   app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
 }
